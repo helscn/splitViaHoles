@@ -1,9 +1,7 @@
 #!/usr/bin/python
 
-####    Author:     Louis He
-####    LastUpdate: 2016/4/25
-
-import sys,math
+import sys,math,os,re
+from genBasic import *
 
 class Via:
     def __init__(self,viaName="",posX=0,posY=0,viaDia=""):
@@ -101,13 +99,9 @@ class Tool:
         ofile=open(f,"r")
         self.vias=[]
         for line in ofile:
-            if len(line) > 5 :
-                s=line.strip("\n")
-                while ("  " in s):
-                    s=s.replace("  "," ")
-                s=s.split(" ")
-                if s[1] == "#P":
-                    self.vias.append(Via(s[0],float(s[2]),float(s[3]),s[4]))
+            s = re.split('[\s]+', line.strip("\n"))
+            if s[1] == "#P":
+                self.vias.append(Via(s[0],float(s[2]),float(s[3]),s[4]))
         ofile.close()
         self.vias.sort(key=lambda v:v.x)
         for i,v in enumerate(self.vias):
@@ -126,7 +120,13 @@ class Tool:
             for v in self.vias:
                  fo.write(v.name+" "+str(v.x)+" "+str(v.y)+" "+str(v.dia)+" "+memo+"\n")
             fo.close()
-    
+
+    def genselect(self,wkLayer="",prex="_xx"):
+        for v in self.vias:
+            COM('sel_layer_feat,operation=select,layer='+wkLayer+',index='+str(v.name[1:]))
+        if int(COM('get_select_count')[-1]) != 0:
+            COM('sel_copy_other,dest=layer_name,target_layer='+wkLayer+prex+',invert=no,dx=0,dy=0,size=0,x_anchor=0,y_anchor=0,rotation=0,mirror=none')
+
 class Splitter():
     def __init__(self,tool):
         self.orgTool=tool
@@ -307,22 +307,44 @@ class Splitter():
             self.isRetry=True
         self.goBack()
 
-        
-threshold=0.182
-if len(sys.argv)>3:
-    inputFile=sys.argv[1]
-    outputFile=sys.argv[2]
-    threshold=float(sys.argv[3])
-elif len(sys.argv)==3:
-    inputFile=sys.argv[1]
-    outputFile=sys.argv[2]
-elif len(sys.argv)==2:
-    inputFile=sys.argv[1]
-    inputFile=sys.argv[1]
-    outputFile=sys.argv[1]+".splited"
-else:
-    print "You should give a data file name at least."
+
+if 'JOB' and 'STEP' not in os.environ.keys(): 
+    PAUSE('Need to run this from within a job and step...')
     sys.exit()
+
+COM('open_job,job='+os.environ['JOB'])
+xs = COM('open_entity,job='+os.environ['JOB']+',type=step,name='+os.environ['STEP']+',iconic=no')
+AUX('set_group,group='+xs[-1])
+wkLayer = COM('get_work_layer')[-1]
+if wkLayer == "":
+    PAUSE('Need to run this on a work layer...')
+    sys.exit()
+
+VOF()
+COM('delete_layer,layer='+wkLayer+'_v01')
+COM('delete_layer,layer='+wkLayer+'_v02')
+COM('delete_layer,layer='+wkLayer+'_v03')
+COM('create_layer,layer='+wkLayer+'_v01,context=misc,type=drill,polarity=positive,ins_layer=')
+COM('create_layer,layer='+wkLayer+'_v02,context=misc,type=drill,polarity=positive,ins_layer=')
+COM('create_layer,layer='+wkLayer+'_v03,context=misc,type=drill,polarity=positive,ins_layer=')
+VON()
+
+COM('sel_clear_feat')
+COM('clear_layers')
+COM('affected_layer,name=,mode=all,affected=no')
+COM('pan_center,x=99,y=99')
+COM('units,type=inch')
+
+COM('display_layer,name='+wkLayer+',display=yes,number=1')
+COM('work_layer,name='+wkLayer)
+
+xinfo = DO_INFO('-t layer -e '+os.environ['JOB']+'/'+os.environ['STEP']+'/'+wkLayer+' -d SYMS_HIST')
+threshold = float(xinfo['gSYMS_HISTsymbol'][0][1:]) * 25.4 / 1000.0
+print(threshold)
+
+inputFile = '/tmp/gen_'+str(os.getpid())+'.'+os.environ['USER']+'.input'
+outputFile = '/tmp/gen_'+str(os.getpid())+'.'+os.environ['USER']+'.output'
+COM('info, out_file='+inputFile+',units=mm,args= -t layer -e '+os.environ['JOB']+'/'+os.environ['STEP']+'/'+wkLayer+' -d FEATURES -o feat_index')
 
 try:
     viaHoles=Tool(inputFile)
@@ -331,9 +353,9 @@ except:
     print "Openging source data file error!"
     sys.exit()
 
-print "Source file:",inputFile
-print "Target file:",outputFile
-print "Threshold =",threshold,"\n"
+#print "Source file:",inputFile
+#print "Target file:",outputFile
+#print "Threshold =",threshold,"\n"
 
 try:
     while viaHoles.count()>0:
@@ -343,11 +365,18 @@ except:
     sys.exit()
 
 try:
-    job.newTools[0].output(outputFile,"A",True)
-    job.newTools[1].output(outputFile,"B",False)
-    job.newTools[2].output(outputFile,"C",False)
+    #job.newTools[0].output(outputFile,"A",True)
+    #job.newTools[1].output(outputFile,"B",False)
+    #job.newTools[2].output(outputFile,"C",False)
+    
+    job.newTools[0].genselect(wkLayer,'_v01')
+    job.newTools[1].genselect(wkLayer,'_v02')
+    job.newTools[2].genselect(wkLayer,'_v03')
+    COM('zoom_back')
+
 except:
-    print "Can't write the data to",outputFile,"!"
+    print "Can't write split drill hole!"
 else:
     print "Job finished."
+    
 sys.exit()
