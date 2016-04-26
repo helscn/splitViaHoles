@@ -1,5 +1,8 @@
 #!/usr/bin/python
 
+####    Author:     Louis He
+####    LastUpdate: 2016/4/25
+
 import sys,math
 
 class Via:
@@ -99,8 +102,12 @@ class Tool:
         self.vias=[]
         for line in ofile:
             if len(line) > 5 :
-                s=line.strip("\n").split(" ")
-                self.vias.append(Via(s[0],float(s[1]),float(s[2]),s[3]))
+                s=line.strip("\n")
+                while ("  " in s):
+                    s=s.replace("  "," ")
+                s=s.split(" ")
+                if s[1] == "#P":
+                    self.vias.append(Via(s[0],float(s[2]),float(s[3]),s[4]))
         ofile.close()
         self.vias.sort(key=lambda v:v.x)
         for i,v in enumerate(self.vias):
