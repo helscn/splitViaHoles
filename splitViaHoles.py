@@ -1,6 +1,6 @@
 #!/usr/bin/python
 
-import sys,math,os,re
+import sys,math,os,re,random
 from genBasic import *
 
 class Via:
@@ -12,6 +12,7 @@ class Via:
         self.dia=viaDia
         self.stamp=[0,0,0]
         self.state=0
+        self.threshold=9999
 
     def __sub__(self,v):
         return math.sqrt((self.x-v.x)**2+(self.y-v.y)**2)
@@ -58,43 +59,52 @@ class Tool:
         else:
             return iMax
     
-    def isNear(self,v,threshold):
+    def getMinPitch(self,v):
         i=self.seek(v.id)
         j=i+1
-        while i>=0:
-            if self.vias[i]-v<threshold:
-                return True
-            elif v.x-self.vias[i].x>threshold:
-                break
-            i-=1
-        while j<len(self.vias):
-            if self.vias[j]-v<threshold:
-                return True
-            elif self.vias[j].x-v.x>threshold:
-                break
-            j+=1
-        return False
-        
-    def getMinPitch(self,v,threshold):
-        i=self.seek(v.id)
-        j=i+1
-        minPitch=threshold
+        count=len(self.vias)
+        minPitch=9999
         while i>=0:
             currentPitch=self.vias[i]-v
             if currentPitch<minPitch:
                 minPitch=currentPitch
-            elif v.x-self.vias[i].x>threshold:
+            if v.x-self.vias[i].x>minPitch:
                 break
             i-=1
-        while j<len(self.vias):
+        while j<count:
             currentPitch=self.vias[j]-v
             if currentPitch<minPitch:
                 minPitch=currentPitch
-            elif self.vias[j].x-v.x>threshold:
+            if self.vias[j].x-v.x>minPitch:
                 break
             j+=1
         return minPitch
 
+    def updateProperty(self):
+        self.vias.sort(key=lambda v:v.x)
+        count=len(self.vias)
+        for i,v1 in enumerate(self.vias):
+            v1.id=i
+            j=i-1
+            while j>=0:
+                v2=self.vias[j]
+                pitch=v1-v2
+                if pitch<v1.threshold:
+                    v1.threshold=pitch
+                if v1.x-v2.x>v1.threshold:
+                    break
+                j-=1
+            j=i+1
+            while j<count:
+                v2=self.vias[j]
+                pitch=v1-v2
+                if pitch<v1.threshold:
+                    v1.threshold=pitch
+                if v2.x-v1.x>v1.threshold:
+                    break
+                j+=1
+            v1.threshold*=1.4   #threshold factor can be set in range (1.0 , sqrt(2))
+    
     def load(self,f):
         ofile=open(f,"r")
         self.vias=[]
@@ -103,10 +113,6 @@ class Tool:
             if s[1] == "#P":
                 self.vias.append(Via(s[0],float(s[2]),float(s[3]),s[4]))
         ofile.close()
-        self.vias.sort(key=lambda v:v.x)
-        for i,v in enumerate(self.vias):
-            v.id=i
-        return self
         
     def output(self,f="",memo="",isWriteMode=True):
         if f=="":
@@ -138,15 +144,17 @@ class Splitter():
         self.isRetry=False
         self.retryCount=0
     
-    def updateStamp(self,v,toolID,threshold):
+    def __updateStamp(self,v,toolID):
         vs=self.orgTool.vias
+        count=len(vs)
         stampLog=[]
         stampViasLog=[]
         i=self.orgTool.seek(v.id)
         j=i+1
         while i>=0:
             via=vs[i]
-            if via-v<threshold:
+            pitch=via-v
+            if pitch<v.threshold and pitch<via.threshold:
                 if via.stamp[toolID]==0:
                     via.stamp[toolID]=1
                     stampLog.append(via)
@@ -159,12 +167,13 @@ class Splitter():
                         stampViasLog.append(index)
                         self.stampVias[1].append(via.id)
                         stampViasLog.append(-1)
-            elif v.x-vs[i].x>threshold:
+            if v.x-vs[i].x>v.threshold:
                 break
             i-=1
-        while j<len(vs):
+        while j<count:
             via=vs[j]
-            if via-v<threshold:
+            pitch=via-v
+            if pitch<v.threshold and pitch<via.threshold:
                 if via.stamp[toolID]==0:
                     via.stamp[toolID]=1
                     stampLog.append(via)
@@ -177,17 +186,17 @@ class Splitter():
                         stampViasLog.append(index)
                         self.stampVias[1].append(via.id)
                         stampViasLog.append(-1)
-            elif vs[j].x-v.x>threshold:
+            if vs[j].x-v.x>v.threshold:
                 break
             j+=1
-            
+        
         self.log.append({   "type":2,
                             "targetToolIndex":toolID,
                             "viaList":stampLog,
                             "stampList":stampViasLog
                         })
         
-    def nextVia(self):
+    def __nextVia(self):
         if len(self.stampVias[1])>0:
             i=self.orgTool.seek(self.stampVias[1].pop())
             via=self.orgTool.vias.pop(i)
@@ -214,52 +223,40 @@ class Splitter():
                             })
             return via
             
-    def splitVia(self,v,threshold):
+    def __splitVia(self,v):
         if v.state<1 and v.stampCount()==3:
             v.state=0
-            self.foundNGVia(v,threshold)
+            self.__foundNGVia(v)
             return
-        if v.state<0:
+
+        i=0
+        if v.stampCount()==0 or v.state==1:
+            maxPitch=0
+            for k in range(0,3):
+                currentPitch=self.newTools[k].getMinPitch(v)
+                if currentPitch>maxPitch:
+                    maxPitch=currentPitch
+                    i=k
+        elif v.state<0:
             for i in [2,1,0]:
                 if v.stamp[i]==0:
-                    j=self.newTools[i].addVia(v)
-                    self.log.append({   "type":1,
-                                        "targetToolIndex":i,
-                                        "targetViaIndex":j
-                                    })
-                    self.updateStamp(v,i,threshold)
                     break
-            
         elif v.state==0:
             for i in range(0,3):
                 if v.stamp[i]==0:
-                    j=self.newTools[i].addVia(v)
-                    self.log.append({   "type":1,
-                                        "targetToolIndex":i,
-                                        "targetViaIndex":j
-                                    })
-                    self.updateStamp(v,i,threshold)
                     if v is self.ngVia:
                         self.testVia.state=-2
                         self.isRetry=False
                     break
-        elif v.state==1:
-            maxPitch=0
-            toolID=0
-            for i in range(0,3):
-                currentPitch=self.newTools[i].getMinPitch(v,threshold)
-                if currentPitch>maxPitch:
-                    maxPitch=currentPitch
-                    toolID=i
-            j=self.newTools[toolID].addVia(v)
-            self.log.append({   "type":1,
-                                "targetToolIndex":toolID,
-                                "targetViaIndex":j
-                            })
-        else:
-            pass
+                    
+        j=self.newTools[i].addVia(v)
+        self.log.append({   "type":1,
+                            "targetToolIndex":i,
+                            "targetViaIndex":j
+                        })
+        self.__updateStamp(v,i)
         
-    def goBack(self):
+    def __goBack(self):
         if self.retryCount>0:
             flag=False
         else:
@@ -298,15 +295,19 @@ class Splitter():
         self.ngVia.state=1
         self.testVia.state=0
 
-    def foundNGVia(self,v,threshold):
+    def __foundNGVia(self,v):
         if self.isRetry:
             self.retryCount+=1
         else:
             self.ngVia=v
             self.retryCount=0
             self.isRetry=True
-        self.goBack()
+        self.__goBack()
 
+    def autoSplitVia(self):
+        self.orgTool.updateProperty()
+        while self.orgTool.count()>0:
+            self.__splitVia(self.__nextVia())
 
 if 'JOB' and 'STEP' not in os.environ.keys(): 
     PAUSE('Need to run this from within a job and step...')
@@ -338,9 +339,9 @@ COM('units,type=inch')
 COM('display_layer,name='+wkLayer+',display=yes,number=1')
 COM('work_layer,name='+wkLayer)
 
-xinfo = DO_INFO('-t layer -e '+os.environ['JOB']+'/'+os.environ['STEP']+'/'+wkLayer+' -d SYMS_HIST')
-threshold = float(xinfo['gSYMS_HISTsymbol'][0][1:]) * 25.4 / 1000.0
-print(threshold)
+#xinfo = DO_INFO('-t layer -e '+os.environ['JOB']+'/'+os.environ['STEP']+'/'+wkLayer+' -d SYMS_HIST')
+#threshold = float(xinfo['gSYMS_HISTsymbol'][0][1:]) * 25.4 / 1000.0
+#print(threshold)
 
 inputFile = '/tmp/gen_'+str(os.getpid())+'.'+os.environ['USER']+'.input'
 outputFile = '/tmp/gen_'+str(os.getpid())+'.'+os.environ['USER']+'.output'
@@ -353,13 +354,8 @@ except:
     print "Openging source data file error!"
     sys.exit()
 
-#print "Source file:",inputFile
-#print "Target file:",outputFile
-#print "Threshold =",threshold,"\n"
-
 try:
-    while viaHoles.count()>0:
-        job.splitVia(job.nextVia(),threshold)
+    job.autoSplitVia()
 except:
     print "Unexpected errors, please contact the programmer."
     sys.exit()
@@ -373,7 +369,6 @@ try:
     job.newTools[1].genselect(wkLayer,'_v02')
     job.newTools[2].genselect(wkLayer,'_v03')
     COM('zoom_back')
-
 except:
     print "Can't write split drill hole!"
 else:
