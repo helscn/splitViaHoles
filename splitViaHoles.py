@@ -1,7 +1,12 @@
 #!/usr/bin/python
 
+#### Last update: 2016/05/06 ####
+
 import sys,math,os,re,random
-from genBasic import *
+
+genesisEnvironVariable = 'GENESIS_VER'
+if genesisEnvironVariable in os.environ.keys(): 
+    from genBasic import *
 
 class Via:
     def __init__(self,viaName="",posX=0,posY=0,viaDia=""):
@@ -127,7 +132,7 @@ class Tool:
                  fo.write(v.name+" "+str(v.x)+" "+str(v.y)+" "+str(v.dia)+" "+memo+"\n")
             fo.close()
 
-    def genselect(self,wkLayer="",prex="_xx"):
+    def genSelect(self,wkLayer="",prex="_xx"): #Genesis
         for v in self.vias:
             COM('sel_layer_feat,operation=select,layer='+wkLayer+',index='+str(v.name[1:]))
         if int(COM('get_select_count')[-1]) != 0:
@@ -309,45 +314,53 @@ class Splitter():
         while self.orgTool.count()>0:
             self.__splitVia(self.__nextVia())
 
-if 'JOB' and 'STEP' not in os.environ.keys(): 
-    PAUSE('Need to run this from within a job and step...')
-    sys.exit()
+def genInitSplitTool():
+    if 'JOB' and 'STEP' not in os.environ.keys(): 
+        PAUSE('Need to run this from within a job and step...')
+        sys.exit()
 
-COM('open_job,job='+os.environ['JOB'])
-xs = COM('open_entity,job='+os.environ['JOB']+',type=step,name='+os.environ['STEP']+',iconic=no')
-AUX('set_group,group='+xs[-1])
-wkLayer = COM('get_work_layer')[-1]
-if wkLayer == "":
-    PAUSE('Need to run this on a work layer...')
-    sys.exit()
+    COM('open_job,job='+os.environ['JOB'])
+    xs = COM('open_entity,job='+os.environ['JOB']+',type=step,name='+os.environ['STEP']+',iconic=no')
+    AUX('set_group,group='+xs[-1])
+    wkLayer = COM('get_work_layer')[-1]
+    if wkLayer == "":
+        PAUSE('Need to run this on a work layer...')
+        sys.exit()
 
-VOF()
-COM('delete_layer,layer='+wkLayer+'_v01')
-COM('delete_layer,layer='+wkLayer+'_v02')
-COM('delete_layer,layer='+wkLayer+'_v03')
-COM('create_layer,layer='+wkLayer+'_v01,context=misc,type=drill,polarity=positive,ins_layer=')
-COM('create_layer,layer='+wkLayer+'_v02,context=misc,type=drill,polarity=positive,ins_layer=')
-COM('create_layer,layer='+wkLayer+'_v03,context=misc,type=drill,polarity=positive,ins_layer=')
-VON()
+    VOF()
+    COM('delete_layer,layer='+wkLayer+'_v01')
+    COM('delete_layer,layer='+wkLayer+'_v02')
+    COM('delete_layer,layer='+wkLayer+'_v03')
+    COM('create_layer,layer='+wkLayer+'_v01,context=misc,type=drill,polarity=positive,ins_layer=')
+    COM('create_layer,layer='+wkLayer+'_v02,context=misc,type=drill,polarity=positive,ins_layer=')
+    COM('create_layer,layer='+wkLayer+'_v03,context=misc,type=drill,polarity=positive,ins_layer=')
+    VON()
 
-COM('sel_clear_feat')
-COM('clear_layers')
-COM('affected_layer,name=,mode=all,affected=no')
-COM('pan_center,x=99,y=99')
-COM('units,type=inch')
+    COM('sel_clear_feat')
+    COM('clear_layers')
+    COM('affected_layer,name=,mode=all,affected=no')
+    COM('units,type=inch')
+    COM('pan_center,x=99,y=99')
 
-COM('display_layer,name='+wkLayer+',display=yes,number=1')
-COM('work_layer,name='+wkLayer)
+    COM('display_layer,name='+wkLayer+',display=yes,number=1')
+    COM('work_layer,name='+wkLayer)
 
-#xinfo = DO_INFO('-t layer -e '+os.environ['JOB']+'/'+os.environ['STEP']+'/'+wkLayer+' -d SYMS_HIST')
-#threshold = float(xinfo['gSYMS_HISTsymbol'][0][1:]) * 25.4 / 1000.0
-#print(threshold)
+    #xinfo = DO_INFO('-t layer -e '+os.environ['JOB']+'/'+os.environ['STEP']+'/'+wkLayer+' -d SYMS_HIST')
+    #threshold = float(xinfo['gSYMS_HISTsymbol'][0][1:]) * 25.4 / 1000.0
+    #print(threshold)
 
-inputFile = '/tmp/gen_'+str(os.getpid())+'.'+os.environ['USER']+'.input'
-outputFile = '/tmp/gen_'+str(os.getpid())+'.'+os.environ['USER']+'.output'
-COM('info, out_file='+inputFile+',units=mm,args= -t layer -e '+os.environ['JOB']+'/'+os.environ['STEP']+'/'+wkLayer+' -d FEATURES -o feat_index')
+    inputFile = '/tmp/gen_'+str(os.getpid())+'.'+os.environ['USER']+'.input'
+    outputFile = '/tmp/gen_'+str(os.getpid())+'.'+os.environ['USER']+'.output'
+    COM('info, out_file='+inputFile+',units=mm,args= -t layer -e '+os.environ['JOB']+'/'+os.environ['STEP']+'/'+wkLayer+' -d FEATURES -o feat_index')
+    
+    return (inputFile, outputFile, wkLayer)
+
 
 try:
+    if genesisEnvironVariable in os.environ.keys(): 
+        (inputFile, outputFile, wkLayer)=genInitSplitTool() #Genesis
+    else:
+        (inputFile, outputFile) = ('/nc/cam/info-genesis186a7.31810.txt', '/nc/cam/info-genesis186a7.31810.txt.output')
     viaHoles=Tool(inputFile)
     job=Splitter(viaHoles)
 except:
@@ -361,14 +374,16 @@ except:
     sys.exit()
 
 try:
-    #job.newTools[0].output(outputFile,"A",True)
-    #job.newTools[1].output(outputFile,"B",False)
-    #job.newTools[2].output(outputFile,"C",False)
-    
-    job.newTools[0].genselect(wkLayer,'_v01')
-    job.newTools[1].genselect(wkLayer,'_v02')
-    job.newTools[2].genselect(wkLayer,'_v03')
-    COM('zoom_back')
+    if genesisEnvironVariable in os.environ.keys(): 
+        job.newTools[0].genSelect(wkLayer,'_v01') #Genesis
+        job.newTools[1].genSelect(wkLayer,'_v02') #Genesis
+        job.newTools[2].genSelect(wkLayer,'_v03') #Genesis
+        COM('zoom_back')                          #Genesis
+    else:
+        job.newTools[0].output(outputFile,"A",True)
+        job.newTools[1].output(outputFile,"B",False)
+        job.newTools[2].output(outputFile,"C",False)
+
 except:
     print "Can't write split drill hole!"
 else:
