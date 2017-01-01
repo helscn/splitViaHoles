@@ -1,23 +1,78 @@
 #!/usr/bin/python
 
-#### Last update: 2016/05/06 ####
+#### Last update: 2017/01/01 ####
 
+#Compatible with python2 and python3
+from __future__ import print_function
 import sys,math,os,re,random
+if sys.version_info[0] == 2:
+    input=raw_input
 
-genesisEnvironVariable = 'GENESIS_VER'
-if genesisEnvironVariable in os.environ.keys(): 
+#Check the environment
+try:
     from genBasic import *
+except ImportError:
+    GENESIS_ENV=False
+else:
+    GENESIS_ENV=True
 
-class Via:
-    def __init__(self,viaName="",posX=0,posY=0,viaDia=""):
+#Save the binary option data
+class BitOptions(object):
+    def __init__(self,value=0):
+        self.__value=value
+        self.__updateCount()
+    
+    def __updateCount(self):
+        self.__count=0
+        for i in range(len(bin(self.__value))-2):
+            self.__count += self.__value>>i & 1
+            
+    def __call__(self,val):
+        self.__value=val
+        self.__updateCount()
+        return self
+        
+    def __len__(self):
+        return len(bin(self.__value))-2
+
+    def __str__(self):
+        return bin(self.__value)[2:]
+
+    def __repr__(self):
+        return '{0}({1})'.format(self.__class__.__name__,self.__value)
+
+    def __getitem__(self,bit):
+        return self.__value>>bit & 1
+
+    def __setitem__(self,bit,val):
+        if self.__value>>bit & 1 == 0:
+            if val:
+                self.__value = 1<<bit | self.__value
+                self.__count += 1
+        else:
+            if not val:
+                self.__value = ~(1<<bit) & self.__value
+                self.__count -= 1
+
+    @property
+    def count(self):
+        return self.__count
+
+    @property
+    def value(self):
+        return self.__value
+
+class Via(object):
+    def __init__(self,viaName='',posX=0,posY=0,viaDia=''):
         self.id=0
-        self.x=posX
-        self.y=posY
         self.name=viaName
+        self.x=float(posX)
+        self.y=float(posY)
         self.dia=viaDia
-        self.stamp=[0,0,0]
+        self.stamp=BitOptions()
         self.state=0
-        self.threshold=9999
+        self.retryCount=0
+        self.isNear=False
 
     def __sub__(self,v):
         return math.sqrt((self.x-v.x)**2+(self.y-v.y)**2)
@@ -25,30 +80,71 @@ class Via:
     def __eq__(self,v):
         return (self.x==v.x and self.y==v.y)
         
-    def stampCount(self):
-        return self.stamp[0]+self.stamp[1]+self.stamp[2]
-
-class Tool:
-    def __init__(self,f=""):
+    def __repr__(self):
+        return "Via('{name}',{x},{y},'{dia}')".format(**self.__dict__)
+        
+    def __str__(self):
+        return "{name} {x} {y} {dia}".format(**self.__dict__)
+    
+class Tool(object):
+    def __init__(self,f=None):
         self.vias=[]
-        if f!="":
+        if f:
             self.load(f)
-
+            
+    def __iter__(self):
+        return iter(self.vias)
+        
+    def __len__(self):
+        return len(self.vias)
+        
+    def __contain__(self,v):
+        return v in self.vias
+        
+    def checkPitch(self,threshold):
+        for v in self.vias:
+            v.isNear=False
+        ngCount=0
+        i=0
+        while i<len(self.vias):
+            v1=self.vias[i]
+            j=i+1
+            while j<len(self.vias):
+                v2=self.vias[j]
+                if v2-v1<=threshold:
+                    v1.isNear=True
+                    v2.isNear=True
+                elif v2.x-v1.x>threshold:
+                    break
+                elif v2.x<v1.x:
+                    self.sortVias()
+                    i=0
+                    j=1
+                    continue
+                j+=1
+            if v1.isNear:
+                ngCount+=1
+            i+=1
+        if self.vias[-1].isNear:
+            ngCount+=1
+        return ngCount
+        
     def addVia(self,v):
-        if len(self.vias)==0 or v.id>self.vias[len(self.vias)-1].id:
+        if len(self.vias)==0 or v.id>self.vias[-1].id:
             self.vias.append(v)
             return len(self.vias)-1
         else:
-            i=self.seek(v.id)
+            i=self.seek(v)
             self.vias.insert(i,v)
             return i
-    def count(self):
-        return len(self.vias)
-        
-    def seek(self,id):
+
+    def seek(self,v):
+        if isinstance(v,Via):
+            id=v.id
+        else:
+            id=v
         if len(self.vias)==0:
             return -1
-        
         iMin=0
         iMax=len(self.vias)-1
         iNow=0
@@ -64,329 +160,394 @@ class Tool:
         else:
             return iMax
     
-    def getMinPitch(self,v):
-        i=self.seek(v.id)
+    def isNear(self,v,threshold):
+        i=self.seek(v)
         j=i+1
-        count=len(self.vias)
-        minPitch=9999
+        while i>=0:
+            if self.vias[i]-v<=threshold:
+                return True
+            elif v.x-self.vias[i].x>threshold:
+                break
+            i-=1
+        while j<len(self.vias):
+            if self.vias[j]-v<=threshold:
+                return True
+            elif self.vias[j].x-v.x>threshold:
+                break
+            j+=1
+        return False
+        
+    def getMinPitch(self,v,threshold):
+        i=self.seek(v)
+        j=i+1
+        minPitch=threshold
         while i>=0:
             currentPitch=self.vias[i]-v
             if currentPitch<minPitch:
                 minPitch=currentPitch
-            if v.x-self.vias[i].x>minPitch:
+            elif v.x-self.vias[i].x>threshold:
                 break
             i-=1
-        while j<count:
+        while j<len(self.vias):
             currentPitch=self.vias[j]-v
             if currentPitch<minPitch:
                 minPitch=currentPitch
-            if self.vias[j].x-v.x>minPitch:
+            elif self.vias[j].x-v.x>threshold:
                 break
             j+=1
         return minPitch
-
-    def updateProperty(self):
-        self.vias.sort(key=lambda v:v.x)
-        count=len(self.vias)
-        for i,v1 in enumerate(self.vias):
-            v1.id=i
-            j=i-1
-            while j>=0:
-                v2=self.vias[j]
-                pitch=v1-v2
-                if pitch<v1.threshold:
-                    v1.threshold=pitch
-                if v1.x-v2.x>v1.threshold:
-                    break
-                j-=1
-            j=i+1
-            while j<count:
-                v2=self.vias[j]
-                pitch=v1-v2
-                if pitch<v1.threshold:
-                    v1.threshold=pitch
-                if v2.x-v1.x>v1.threshold:
-                    break
-                j+=1
-            v1.threshold*=1.4   #threshold factor can be set in range (1.0 , sqrt(2))
-    
-    def load(self,f):
-        ofile=open(f,"r")
-        self.vias=[]
-        for line in ofile:
-            s = re.split('[\s]+', line.strip("\n"))
-            if s[1] == "#P":
-                self.vias.append(Via(s[0],float(s[2]),float(s[3]),s[4]))
-        ofile.close()
         
-    def output(self,f="",memo="",isWriteMode=True):
-        if f=="":
-            for v in self.vias:
-                 print v.x,v.y,v.dia,memo
-        else:
-            if isWriteMode:
-                fo=open(f,"w")
-            else:
-                fo=open(f,"a")
-            for v in self.vias:
-                 fo.write(v.name+" "+str(v.x)+" "+str(v.y)+" "+str(v.dia)+" "+memo+"\n")
-            fo.close()
+    def sortVias(self):
+        self.vias.sort(key=lambda v:v.x)
+        for i,v in enumerate(self.vias):
+            v.id=i
+        return self
 
-    def genSelect(self,wkLayer="",prex="_xx"): #Genesis
+    def load(self,f):
+        self.vias=[]
+        pattern=re.compile(r"^(#?\d+)?\s*(?:#[A-Z]+\s+)?(-?\d*\.?\d+)\s+(-?\d*\.?\d+)\s+(r\d+)")
+        with open(f,'r') as f:
+            for line in f:
+                m=pattern.match(line)
+                if m:
+                    n,x,y,r=m.groups()
+                    self.vias.append(Via(n or '',x,y,r))
+        self.sortVias()
+        return self
+        
+    def output(self,name='',f=None):
+        for v in self.vias:
+            n=random.choice(name) if type(name) in [list,tuple,set] else name
+            if hasattr(f,'write'):
+                f.write('{0} {1}\n'.format(str(v),n))
+            else:
+                print('{0} {1}'.format(str(v),n))
+
+    def genselect(self,wkLayer='',prex='_xx'):
         for v in self.vias:
             COM('sel_layer_feat,operation=select,layer='+wkLayer+',index='+str(v.name[1:]))
         if int(COM('get_select_count')[-1]) != 0:
             COM('sel_copy_other,dest=layer_name,target_layer='+wkLayer+prex+',invert=no,dx=0,dy=0,size=0,x_anchor=0,y_anchor=0,rotation=0,mirror=none')
 
-class Splitter():
-    def __init__(self,tool):
+class Splitter(object):
+    def __init__(self,tool,threshold,newToolsCount=3):
         self.orgTool=tool
-        self.newTools=[Tool(),Tool(),Tool()]
-        self.stampVias=[[],[]]
-        self.log=[]
-        self.testVia=Via()
-        self.ngVia=Via()
-        self.isRetry=False
-        self.retryCount=0
+        self.threshold=threshold
+        self.newTools=[]
+        self.stampVias=[]
+        for i in range(newToolsCount):
+            self.newTools.append(Tool())
+            self.stampVias.append([])
+        self.newToolsCount=newToolsCount
+        self.__log=[]
+        self.__testVia=Via()
+        self.__ngVia=Via()
+        self.__isRetry=False
+        self.__retryCount=0
     
-    def __updateStamp(self,v,toolID):
-        vs=self.orgTool.vias
-        count=len(vs)
-        stampLog=[]
-        stampViasLog=[]
-        i=self.orgTool.seek(v.id)
-        j=i+1
-        while i>=0:
-            via=vs[i]
-            pitch=via-v
-            if pitch<v.threshold and pitch<via.threshold:
-                if via.stamp[toolID]==0:
-                    via.stamp[toolID]=1
-                    stampLog.append(via)
-                    if via.stampCount()==1:
-                        self.stampVias[0].append(via.id)
-                        stampViasLog.append(-2)
-                    elif via.stampCount()==2:
-                        index=self.stampVias[0].index(via.id)
-                        self.stampVias[0].pop(index)
-                        stampViasLog.append(index)
-                        self.stampVias[1].append(via.id)
-                        stampViasLog.append(-1)
-            if v.x-vs[i].x>v.threshold:
-                break
-            i-=1
-        while j<count:
-            via=vs[j]
-            pitch=via-v
-            if pitch<v.threshold and pitch<via.threshold:
-                if via.stamp[toolID]==0:
-                    via.stamp[toolID]=1
-                    stampLog.append(via)
-                    if via.stampCount()==1:
-                        self.stampVias[0].append(via.id)
-                        stampViasLog.append(-2)
-                    elif via.stampCount()==2:
-                        index=self.stampVias[0].index(via.id)
-                        self.stampVias[0].pop(index)
-                        stampViasLog.append(index)
-                        self.stampVias[1].append(via.id)
-                        stampViasLog.append(-1)
-            if vs[j].x-v.x>v.threshold:
-                break
-            j+=1
-        
-        self.log.append({   "type":2,
-                            "targetToolIndex":toolID,
-                            "viaList":stampLog,
-                            "stampList":stampViasLog
-                        })
-        
-    def __nextVia(self):
-        if len(self.stampVias[1])>0:
-            i=self.orgTool.seek(self.stampVias[1].pop())
-            via=self.orgTool.vias.pop(i)
-            self.log.append({   "type":0,
-                                "srcStampIndex":1,
-                                "srcViaIndex":i,
-                                "srcVia":via
-                            })
-            return via
-        elif len(self.stampVias[0])>0:
-            i=self.orgTool.seek(self.stampVias[0].pop())
-            via=self.orgTool.vias.pop(i)
-            self.log.append({   "type":0,
-                                "srcStampIndex":0,
-                                "srcViaIndex":i,
-                                "srcVia":via
+    def __iter__(self):
+        return self
+    
+    def __next__(self):
+        for i in range(self.newToolsCount-2,-1,-1):
+            if len(self.stampVias[i])>0:                    #Near with other tools
+                j=self.orgTool.seek(self.stampVias[i].pop())
+                via=self.orgTool.vias.pop(j)
+                self.__log.append({ 'type':0,             #Get a neighboring hole
+                                    'srcStampIndex':i,
+                                    'srcViaIndex':j,
+                                    'srcVia':via
+                                })
+                return via
+        if len(self.orgTool)>0:
+            self.__log=[]
+            via=self.orgTool.vias.pop()
+            self.__log.append({ 'type':-1,                #New area start
+                                'srcVia':via
                             })
             return via
         else:
-            self.log=[]
-            via=self.orgTool.vias.pop()
-            self.log.append({   "type":-1,
-                                "srcVia":via
+            raise StopIteration
+    
+    next=__next__
+    
+    def filter(self,threshold=None):
+        threshold=threshold or self.threshold
+        self.orgTool.checkPitch(threshold)
+        okTool=Tool()
+        vs=self.orgTool.vias
+        i=len(vs)-1
+        while i>=0:
+            if not vs[i].isNear:
+                okTool.vias.append(vs.pop(i))
+            i-=1
+        return okTool
+
+    def splitVia(self,v,threshold=None):
+        threshold=threshold or self.threshold
+        if v.stamp.count==0:
+            i=0
+            j=self.newTools[i].addVia(v)
+            self.__log.append({ 'type':1,
+                                'targetToolIndex':i,
+                                'targetViaIndex':j
                             })
-            return via
-            
-    def __splitVia(self,v):
-        if v.state<1 and v.stampCount()==3:
+            self.__updateStamp(v,i)
+            return
+        if v.state<1 and v.stamp.count==self.newToolsCount:     #Found ng via hole
             v.state=0
             self.__foundNGVia(v)
             return
-
-        i=0
-        if v.stampCount()==0 or v.state==1:
+        if v.state==0:          #Normal via hole
+            for i in range(self.newToolsCount):
+                if v.stamp[i]==0:
+                    j=self.newTools[i].addVia(v)
+                    self.__log.append({ 'type':1,
+                                        'targetToolIndex':i,
+                                        'targetViaIndex':j
+                                    })
+                    self.__updateStamp(v,i)
+                    
+                    if v is self.__ngVia:
+                        self.__testVia.state=-2
+                        self.__isRetry=False
+                    break
+        elif v.state==1:        #Insert this ng hole into the farthest tool
             maxPitch=0
-            for k in range(0,3):
-                currentPitch=self.newTools[k].getMinPitch(v)
+            toolID=0
+            for i in range(self.newToolsCount):
+                currentPitch=self.newTools[i].getMinPitch(v,threshold)
                 if currentPitch>maxPitch:
                     maxPitch=currentPitch
-                    i=k
-        elif v.state<0:
-            for i in [2,1,0]:
+                    toolID=i
+            j=self.newTools[toolID].addVia(v)
+            self.__log.append({ 'type':1,
+                                'targetToolIndex':toolID,
+                                'targetViaIndex':j
+                            })
+        elif v.state == -1:       #It's a testVia
+            retry=v.retryCount
+            for i in range(self.newToolsCount):
                 if v.stamp[i]==0:
-                    break
-        elif v.state==0:
-            for i in range(0,3):
+                    if retry>0:
+                        retry-=1
+                    else:
+                        j=self.newTools[i].addVia(v)
+                        self.__log.append({ 'type':1,
+                                            'targetToolIndex':i,
+                                            'targetViaIndex':j
+                                        })
+                        self.__updateStamp(v,i)
+                        v.retryCount+=1
+                        return
+            
+        elif v.state == -2:       #It's a testVia that can fix the ng hole
+            retry=v.retryCount
+            for i in range(self.newToolsCount):
                 if v.stamp[i]==0:
-                    if v is self.ngVia:
-                        self.testVia.state=-2
-                        self.isRetry=False
-                    break
-                    
-        j=self.newTools[i].addVia(v)
-        self.log.append({   "type":1,
-                            "targetToolIndex":i,
-                            "targetViaIndex":j
-                        })
-        self.__updateStamp(v,i)
+                    if retry>0:
+                        retry-=1
+                    else:
+                        j=self.newTools[i].addVia(v)
+                        self.__log.append({ 'type':1,
+                                            'targetToolIndex':i,
+                                            'targetViaIndex':j
+                                        })
+                        self.__updateStamp(v,i)
+                        return
         
+    def __updateStamp(self,v,toolID):
+        threshold=self.threshold
+        vs=self.orgTool.vias
+        stampLog=[]
+        i=self.orgTool.seek(v)
+        j=i+1
+        while i>=0:
+            via=vs[i]
+            if via-v<threshold:
+                if via.stamp[toolID]==0:
+                    via.stamp[toolID]=1
+                    stampIndex=via.stamp.count-1
+                    self.stampVias[stampIndex].append(via.id)
+                    holeIndex=None
+                    if stampIndex>0:
+                        #Popup neighboring holes from previous stamp list
+                        holeIndex=self.stampVias[stampIndex-1].index(via.id)
+                        self.stampVias[stampIndex-1].pop(holeIndex)
+                    stampLog.append((via,stampIndex,holeIndex))
+            elif abs(vs[i].x-v.x)>threshold:
+                break
+            i-=1
+        
+        while j<len(vs):
+            via=vs[j]
+            if via-v<threshold:
+                if via.stamp[toolID]==0:
+                    via.stamp[toolID]=1
+                    stampIndex=via.stamp.count-1
+                    self.stampVias[stampIndex].append(via.id)
+                    holeIndex=None
+                    if stampIndex>0:
+                        #Popup neighboring holes from previous stamp list
+                        holeIndex=self.stampVias[stampIndex-1].index(via.id)
+                        self.stampVias[stampIndex-1].pop(holeIndex)
+                    stampLog.append((via,stampIndex,holeIndex))
+            elif abs(vs[j].x-v.x)>threshold:
+                break
+            j+=1
+            
+        self.__log.append({ 'type':2,
+                            'targetToolIndex':toolID,
+                            'stampLog':stampLog
+                        })
+
+
     def __goBack(self):
-        if self.retryCount>0:
-            flag=False
-        else:
-            flag=True
-        while len(self.log)>0:
-            action=self.log.pop()
-            actionType=action["type"]
-            if actionType==-1:
-                self.orgTool.vias.append(action["srcVia"])
-            elif actionType==0:
-                via=action["srcVia"]
-                self.stampVias[action["srcStampIndex"]].append(via.id)
-                self.orgTool.vias.insert(action["srcViaIndex"],via)
-                if via.state==-1:
-                    via.state=0
-                    flag=True
-                elif (flag and via.stampCount()==1 and via.state==0):
-                    via.state=-1
-                    self.testVia=via
+        flag = False if self.__retryCount>0 else True       #flag=True means to back to the first testVia
+        while len(self.__log)>0:
+            action=self.__log.pop()
+            actionType=action['type']
+            if actionType==-1:                              #Get via hole from orgTool
+                self.orgTool.vias.append(action['srcVia'])
+                continue
+            elif actionType==0:                             #Get via hole from neighboring holes
+                via=action['srcVia']
+                self.stampVias[action['srcStampIndex']].append(via.id)
+                self.orgTool.vias.insert(action['srcViaIndex'],via)
+                if via.state==-1:                         #Last testVia
+                    if via.retryCount>=self.newToolsCount-v.stamp.count:
+                        flag=True
+                        via.state=0
+                        via.retryCount=0
+                        self.__retryCount+=1
+                        continue
+                    else:
+                        return
+                elif (flag and 0<via.stamp.count<self.newToolsCount-1 and via.state==0):
+                    via.state=-1                            #First retry
+                    self.__testVia=via
                     return
-            elif actionType==1:
-                self.newTools[action["targetToolIndex"]].vias.pop(action["targetViaIndex"])
-                
-            elif actionType==2:
-                for via in action["viaList"]:
-                    via.stamp[action["targetToolIndex"]]=0
-                
-                li=action["stampList"]
-                while len(li)>0:
-                    v=li.pop()
-                    if v<0:
-                        id=self.stampVias[v+2].pop()
-                    elif v>=0:
-                        self.stampVias[0].insert(v,id)
-        self.isRetry=False
-        self.ngVia.state=1
-        self.testVia.state=0
+                elif via.state==-2:
+                    continue
+            elif actionType==1:                             #Split via hole
+                self.newTools[action['targetToolIndex']].vias.pop(action['targetViaIndex'])
+                continue
+            elif actionType==2:                             #Update the stamps
+                toolIndex=action['targetToolIndex']
+                for (via,stampIndex,holeIndex) in action['stampLog']:
+                    via.stamp[toolIndex]=0
+                    id=self.stampVias[stampIndex].pop()
+                    if holeIndex:
+                        self.stampVias[stampIndex-1].insert(holeIndex,id)
+        self.__isRetry=False
+        self.__retryCount=0
+        self.__ngVia.state=1
+        self.__testVia.state=0
+        self.__testVia.retryCount=0
 
     def __foundNGVia(self,v):
-        if self.isRetry:
-            self.retryCount+=1
+        if self.__isRetry:
+            self.__retryCount+=1
         else:
-            self.ngVia=v
-            self.retryCount=0
-            self.isRetry=True
+            self.__ngVia=v
+            self.__retryCount=0
+            self.__isRetry=True
         self.__goBack()
 
-    def autoSplitVia(self):
-        self.orgTool.updateProperty()
-        while self.orgTool.count()>0:
-            self.__splitVia(self.__nextVia())
+def valid_input(prompt='',func=None,errorMessage='Invalid input!'):
+    while True:
+        s=input(prompt)
+        if not func:
+            return s
+        try:
+            if hasattr(func,'__call__'):
+                if func(s):
+                    return s
+                else:
+                    raise ValueError
+            elif hasattr(func,'match'):
+                if func.match(s):
+                    return s
+                else:
+                    raise ValueError
+        except ValueError:
+            print(errorMessage)
+            continue
 
-def genInitSplitTool():
-    if 'JOB' and 'STEP' not in os.environ.keys(): 
+if GENESIS_ENV:
+    if 'JOB' not in os.environ or 'STEP' not in os.environ:
         PAUSE('Need to run this from within a job and step...')
         sys.exit()
-
     COM('open_job,job='+os.environ['JOB'])
     xs = COM('open_entity,job='+os.environ['JOB']+',type=step,name='+os.environ['STEP']+',iconic=no')
     AUX('set_group,group='+xs[-1])
     wkLayer = COM('get_work_layer')[-1]
-    if wkLayer == "":
+    if wkLayer == '':
         PAUSE('Need to run this on a work layer...')
         sys.exit()
 
+    #toolsCount=?
     VOF()
-    COM('delete_layer,layer='+wkLayer+'_v01')
-    COM('delete_layer,layer='+wkLayer+'_v02')
-    COM('delete_layer,layer='+wkLayer+'_v03')
-    COM('create_layer,layer='+wkLayer+'_v01,context=misc,type=drill,polarity=positive,ins_layer=')
-    COM('create_layer,layer='+wkLayer+'_v02,context=misc,type=drill,polarity=positive,ins_layer=')
-    COM('create_layer,layer='+wkLayer+'_v03,context=misc,type=drill,polarity=positive,ins_layer=')
+    for i in range(toolsCount):
+        COM('delete_layer,layer={0}{1:02}'.format(wkLayer,i+1))
+        COM('create_layer,layer={0}{1:02},context=misc,type=drill,polarity=positive,ins_layer='.format(wkLayer,i+1))
     VON()
 
     COM('sel_clear_feat')
     COM('clear_layers')
     COM('affected_layer,name=,mode=all,affected=no')
-    COM('units,type=inch')
     COM('pan_center,x=99,y=99')
+    COM('units,type=inch')
 
     COM('display_layer,name='+wkLayer+',display=yes,number=1')
     COM('work_layer,name='+wkLayer)
 
-    #xinfo = DO_INFO('-t layer -e '+os.environ['JOB']+'/'+os.environ['STEP']+'/'+wkLayer+' -d SYMS_HIST')
-    #threshold = float(xinfo['gSYMS_HISTsymbol'][0][1:]) * 25.4 / 1000.0
-    #print(threshold)
-
+    xinfo = DO_INFO('-t layer -e '+os.environ['JOB']+'/'+os.environ['STEP']+'/'+wkLayer+' -d SYMS_HIST')
+    threshold = float(xinfo['gSYMS_HISTsymbol'][0][1:]) * 25.4 / 1000.0
     inputFile = '/tmp/gen_'+str(os.getpid())+'.'+os.environ['USER']+'.input'
-    outputFile = '/tmp/gen_'+str(os.getpid())+'.'+os.environ['USER']+'.output'
     COM('info, out_file='+inputFile+',units=mm,args= -t layer -e '+os.environ['JOB']+'/'+os.environ['STEP']+'/'+wkLayer+' -d FEATURES -o feat_index')
-    
-    return (inputFile, outputFile, wkLayer)
-
-
-try:
-    if genesisEnvironVariable in os.environ.keys(): 
-        (inputFile, outputFile, wkLayer)=genInitSplitTool() #Genesis
-    else:
-        (inputFile, outputFile) = ('/nc/cam/info-genesis186a7.31810.txt', '/nc/cam/info-genesis186a7.31810.txt.output')
-    viaHoles=Tool(inputFile)
-    job=Splitter(viaHoles)
-except:
-    print "Openging source data file error!"
-    sys.exit()
-
-try:
-    job.autoSplitVia()
-except:
-    print "Unexpected errors, please contact the programmer."
-    sys.exit()
-
-try:
-    if genesisEnvironVariable in os.environ.keys(): 
-        job.newTools[0].genSelect(wkLayer,'_v01') #Genesis
-        job.newTools[1].genSelect(wkLayer,'_v02') #Genesis
-        job.newTools[2].genSelect(wkLayer,'_v03') #Genesis
-        COM('zoom_back')                          #Genesis
-    else:
-        job.newTools[0].output(outputFile,"A",True)
-        job.newTools[1].output(outputFile,"B",False)
-        job.newTools[2].output(outputFile,"C",False)
-
-except:
-    print "Can't write split drill hole!"
 else:
-    print "Job finished."
+    inputFile = valid_input(prompt='Input the data file path: ',func=os.path.isfile,errorMessage='The file not exist!')
+    outputFile = valid_input(prompt='Input the output file name: ',func=re.compile(r'^([^":\*\?]{1,254})$'),errorMessage='Invalid file name!')
+    threshold = float(valid_input(prompt='Input the threshold value: ',func=float,errorMessage='Invalid threshold value!'))
+    toolsCount = int(valid_input(prompt='Input the new tools count: ',func=int,errorMessage='Invalid tools count.'))
+
+try:
+    viaHoles=Tool(inputFile)
+    print('\nTotal holes: {0}\nThreshold: {1}\nNew tools count: {2}'.format(len(viaHoles),threshold,toolsCount))
+
+    job=Splitter(viaHoles,threshold,toolsCount)
+    okHoles=job.filter()
+except:
+    print('Openging source data file error!')
+    sys.exit()
+
+try:
+    for via in job:
+        job.splitVia(via)
+except:
+    print('Unexpected errors, please contact the programmer.')
+    sys.exit()
+
+try:
+    ngHolesCount=0
+    for t in job.newTools:
+        ngHolesCount+=t.checkPitch(threshold)
+    print('\nTotal NG holes: {0}'.format(ngHolesCount))
+    
+    if GENESIS_ENV:
+        for i in range(toolsCount):
+            job.newTools[i].genselect(wkLayer,'{0:02}'.format(v+1))
+            COM('zoom_back')
+    else:
+        with open(outputFile,'w') as f:
+            toolNames=['T{0:02}'.format(v+1) for v in range(toolsCount)]
+            for i in range(toolsCount):
+                job.newTools[i].output(toolNames[i],f)
+            okHoles.output(toolNames,f)     #Random tool name
+except:
+    print("Can't output the drill hole data!")
+else:
+    print('Job finished.')
     
 sys.exit()
