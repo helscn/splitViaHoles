@@ -1,10 +1,10 @@
 #!/usr/bin/python
 
-#### Last update: 2017/01/01 ####
+#### Last update: 2017/01/04 ####
 
 #Compatible with python2 and python3
 from __future__ import print_function
-import sys,math,os,re,random
+import sys,math,os,re,random,time
 if sys.version_info[0] == 2:
     input=raw_input
 
@@ -16,8 +16,8 @@ except ImportError:
 else:
     GENESIS_ENV=True
 
-#Save the binary option data
 class BitOptions(object):
+    '''Save the binary option data by bit'''
     def __init__(self,value=0):
         self.__value=value
         self.__updateCount()
@@ -63,6 +63,7 @@ class BitOptions(object):
         return self.__value
 
 class Via(object):
+    '''Save the data about via hole'''
     def __init__(self,viaName='',posX=0,posY=0,viaDia=''):
         self.id=0
         self.name=viaName
@@ -125,8 +126,6 @@ class Tool(object):
             if v1.isNear:
                 ngCount+=1
             i+=1
-        if self.vias[-1].isNear:
-            ngCount+=1
         return ngCount
         
     def addVia(self,v):
@@ -224,6 +223,7 @@ class Tool(object):
                 print('{0} {1}'.format(str(v),n))
 
     def genselect(self,wkLayer='',prex='_xx'):
+        prex=random.choice(prex) if type(prex) in [list,tuple,set] else prex
         for v in self.vias:
             COM('sel_layer_feat,operation=select,layer='+wkLayer+',index='+str(v.name[1:]))
         if int(COM('get_select_count')[-1]) != 0:
@@ -249,8 +249,8 @@ class Splitter(object):
         return self
     
     def __next__(self):
-        for i in range(self.newToolsCount-2,-1,-1):
-            if len(self.stampVias[i])>0:                    #Near with other tools
+        for i in range(self.newToolsCount-1,-1,-1):
+            if len(self.stampVias[i])>0:                  #Near with other tools
                 j=self.orgTool.seek(self.stampVias[i].pop())
                 via=self.orgTool.vias.pop(j)
                 self.__log.append({ 'type':0,             #Get a neighboring hole
@@ -281,21 +281,12 @@ class Splitter(object):
             if not vs[i].isNear:
                 okTool.vias.append(vs.pop(i))
             i-=1
+        okTool.vias=okTool.vias[-1::-1]                  #Reverse the via list
         return okTool
 
     def splitVia(self,v,threshold=None):
         threshold=threshold or self.threshold
-        if v.stamp.count==0:
-            i=0
-            j=self.newTools[i].addVia(v)
-            self.__log.append({ 'type':1,
-                                'targetToolIndex':i,
-                                'targetViaIndex':j
-                            })
-            self.__updateStamp(v,i)
-            return
         if v.state<1 and v.stamp.count==self.newToolsCount:     #Found ng via hole
-            v.state=0
             self.__foundNGVia(v)
             return
         if v.state==0:          #Normal via hole
@@ -308,9 +299,10 @@ class Splitter(object):
                                     })
                     self.__updateStamp(v,i)
                     
-                    if v is self.__ngVia:
+                    if v is self.__ngVia:   #Fix a ng hole
                         self.__testVia.state=-2
                         self.__isRetry=False
+                        self.__retryCount=0
                     break
         elif v.state==1:        #Insert this ng hole into the farthest tool
             maxPitch=0
@@ -414,8 +406,8 @@ class Splitter(object):
                 via=action['srcVia']
                 self.stampVias[action['srcStampIndex']].append(via.id)
                 self.orgTool.vias.insert(action['srcViaIndex'],via)
-                if via.state==-1:                         #Last testVia
-                    if via.retryCount>=self.newToolsCount-v.stamp.count:
+                if via.state==-1:                           #Last testVia
+                    if via.retryCount>=self.newToolsCount-via.stamp.count:
                         flag=True
                         via.state=0
                         via.retryCount=0
@@ -427,17 +419,18 @@ class Splitter(object):
                     via.state=-1                            #First retry
                     self.__testVia=via
                     return
-                elif via.state==-2:
+                elif via.state==-2:     #A old test via for ng hole
                     continue
             elif actionType==1:                             #Split via hole
                 self.newTools[action['targetToolIndex']].vias.pop(action['targetViaIndex'])
                 continue
             elif actionType==2:                             #Update the stamps
                 toolIndex=action['targetToolIndex']
-                for (via,stampIndex,holeIndex) in action['stampLog']:
+                while len(action['stampLog'])>0:
+                    via,stampIndex,holeIndex=action['stampLog'].pop()
                     via.stamp[toolIndex]=0
                     id=self.stampVias[stampIndex].pop()
-                    if holeIndex:
+                    if holeIndex is not None:
                         self.stampVias[stampIndex-1].insert(holeIndex,id)
         self.__isRetry=False
         self.__retryCount=0
@@ -475,6 +468,9 @@ def valid_input(prompt='',func=None,errorMessage='Invalid input!'):
             continue
 
 if GENESIS_ENV:
+    ##################
+    toolsCount=int(sys.argv[1]) if len(sys.argv[1])>1 else 3        #The quantity of new tools should >=3
+    ##################
     if 'JOB' not in os.environ or 'STEP' not in os.environ:
         PAUSE('Need to run this from within a job and step...')
         sys.exit()
@@ -485,14 +481,11 @@ if GENESIS_ENV:
     if wkLayer == '':
         PAUSE('Need to run this on a work layer...')
         sys.exit()
-
-    #toolsCount=?
     VOF()
     for i in range(toolsCount):
         COM('delete_layer,layer={0}{1:02}'.format(wkLayer,i+1))
         COM('create_layer,layer={0}{1:02},context=misc,type=drill,polarity=positive,ins_layer='.format(wkLayer,i+1))
     VON()
-
     COM('sel_clear_feat')
     COM('clear_layers')
     COM('affected_layer,name=,mode=all,affected=no')
@@ -513,41 +506,53 @@ else:
     toolsCount = int(valid_input(prompt='Input the new tools count: ',func=int,errorMessage='Invalid tools count.'))
 
 try:
+    startTime=time.clock()
     viaHoles=Tool(inputFile)
-    print('\nTotal holes: {0}\nThreshold: {1}\nNew tools count: {2}'.format(len(viaHoles),threshold,toolsCount))
+    viaHolesCount=len(viaHoles)
 
     job=Splitter(viaHoles,threshold,toolsCount)
-    okHoles=job.filter()
+    okHolesTool=job.filter()
+    okHolesCount=len(okHolesTool)
+
+    print(  '\nTotal holes: {viaHolesCount}\n'
+            'Threshold: {threshold}\n'
+            'New tools count: {toolsCount}\n'
+            '\nExclude {okHolesCount} via holes that pitch>{threshold}'
+            .format(**locals())
+        )
+
 except:
-    print('Openging source data file error!')
+    print('\nOpenging source data file error!')
     sys.exit()
 
 try:
     for via in job:
         job.splitVia(via)
 except:
-    print('Unexpected errors, please contact the programmer.')
+    print('\nUnexpected errors, please contact the programmer.')
     sys.exit()
 
 try:
     ngHolesCount=0
     for t in job.newTools:
         ngHolesCount+=t.checkPitch(threshold)
-    print('\nTotal NG holes: {0}'.format(ngHolesCount))
-    
+    print('\nTotal failed holes: {0}'.format(ngHolesCount))
+
     if GENESIS_ENV:
-        for i in range(toolsCount):
-            job.newTools[i].genselect(wkLayer,'{0:02}'.format(v+1))
+        toolNames=['{0:02}'.format(v+1) for v in range(toolsCount)]
+        for v in range(toolsCount):
+            job.newTools[v].genselect(wkLayer,'{0:02}'.format(v+1))
             COM('zoom_back')
+        okHolesTool.genselect(wkLayer,toolNames)     #Random tool name
     else:
         with open(outputFile,'w') as f:
             toolNames=['T{0:02}'.format(v+1) for v in range(toolsCount)]
             for i in range(toolsCount):
                 job.newTools[i].output(toolNames[i],f)
-            okHoles.output(toolNames,f)     #Random tool name
+            okHolesTool.output(toolNames,f)     #Random tool name
 except:
-    print("Can't output the drill hole data!")
+    print("\nCan't write the hole data!")
 else:
-    print('Job finished.')
+    print('Job finished in {0:.2f} second(s).'.format(time.clock()-startTime))
     
 sys.exit()
