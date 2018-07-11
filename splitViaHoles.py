@@ -1,6 +1,6 @@
 #!/usr/bin/python
 
-#### Last update: 2017/01/04 ####
+#### Last update: 2018/07/11 ####
 
 #Compatible with python2 and python3
 from __future__ import print_function
@@ -469,7 +469,7 @@ def valid_input(prompt='',func=None,errorMessage='Invalid input!'):
 
 if GENESIS_ENV:
     ##################
-    toolsCount=int(sys.argv[1]) if len(sys.argv[1])>1 else 3        #The quantity of new tools should >=3
+    toolsCount=int(sys.argv[1]) if len(sys.argv)>1 and int(sys.argv[1])>2 else 3        #Get new tools count from command argument
     ##################
     if 'JOB' not in os.environ or 'STEP' not in os.environ:
         PAUSE('Need to run this from within a job and step...')
